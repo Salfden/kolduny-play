@@ -40,14 +40,16 @@ function reachableWithoutMagic(map,start){
 function generate(seed){seed=seed>>>0;for(let i=0;i<200;i++){const m=layout(seed);if(m.starts.every(s=>!reachableWithoutMagic(m,s)))return m;seed=(seed+4)>>>0}throw Error('Не удалось построить уровень')}
 function cleanName(value,fallback='Колдун'){if(typeof value!=='string')return fallback;const n=[...value.normalize('NFC').replace(/[\u0000-\u001f\u007f-\u009f]/g,' ').replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g,'').replace(/\s+/g,' ').trim()].slice(0,20).join('');return n||fallback}
 function ready(sim){return sim.players.length===2&&sim.players.every(p=>p.present)}
+function canMove(sim,actor){return ready(sim)&&!sim.won&&!!sim.players[actor]?.present&&!sim.players[actor].home}
 function canControl(sim,actor,turn=sim.turns){return ready(sim)&&!sim.won&&actor===sim.active&&!sim.players[actor]?.home&&turn===sim.turns}
+function wizardBody(x,y){return Bodies.rectangle(x,y,28,48,{chamfer:{radius:8},density:.0028,friction:.12,frictionStatic:.6,frictionAir:.012,restitution:0,inertia:Infinity,collisionFilter:{category:2,mask:1},label:'wizard'})}
 function setPresent(sim,index,present,{respawn=false}={}){const p=sim.players[index];if(!p||(p.present===!!present&&!respawn))return;sim.inputs=[{},{}];p.jumpHeld=false;if(respawn){Body.setStatic(p.body,false);p.body.isSensor=false;p.home=false;Body.setPosition(p.body,sim.map.starts[index]);Body.setVelocity(p.body,{x:0,y:0});sim.won=false}if(p.present!==!!present){p.present=!!present;if(p.present)Composite.add(sim.engine.world,p.body);else Composite.remove(sim.engine.world,p.body)}emit(sim,'presence',{player:index,present:p.present})}
 function create(seed,level=1,options={}){
  const map=generate(seed),engine=Engine.create({gravity:{x:0,y:GRAVITY},positionIterations:8,velocityIterations:8,constraintIterations:5});
  const sim={engine,map,level,active:0,casts:0,turns:0,players:[],objects:[],joints:[],won:false,events:[],nextId:1,inputs:[{},{}],tick:0};
  sim.terrain=map.platforms.map(p=>{const b=Bodies.rectangle(p.x+p.w/2,p.y+p.h/2,p.w,p.h,{isStatic:true,friction:.8,label:'island'});b.game={type:'island',platform:p.id};return b});
  Composite.add(engine.world,sim.terrain);
- sim.players=map.starts.map((p,i)=>{const b=Bodies.rectangle(p.x,p.y,28,48,{chamfer:{radius:8},density:.0028,friction:.12,frictionStatic:.6,frictionAir:.012,restitution:0,inertia:Infinity,collisionFilter:{category:2,mask:1},label:'wizard'});const player={body:b,present:!!(options.present||[true,false])[i],name:cleanName(options.names?.[i],i?'Друг':'Колдун'),home:false,face:i? -1:1,ground:false,coyote:0,jumpHeld:false};b.game={type:'wizard',player:i};if(player.present)Composite.add(engine.world,b);return player});
+ sim.players=map.starts.map((p,i)=>{const b=wizardBody(p.x,p.y);const player={body:b,present:!!(options.present||[true,false])[i],name:cleanName(options.names?.[i],i?'Друг':'Колдун'),home:false,face:i? -1:1,ground:false,coyote:0,jumpHeld:false};b.game={type:'wizard',player:i};if(player.present)Composite.add(engine.world,b);return player});
  map.props.forEach(p=>{const o=addObject(sim,p.type,p.x,p.y,p.angle||0,-1,{w:p.w});if(p.pivot)addPin(sim,o,{x:p.x,y:p.y})});
  return sim;
 }
@@ -78,7 +80,7 @@ function preview(sim,spell,x,y,angle=0){
  if(Query.collides(probe,blockers).some(c=>c.depth>2))return{ok:false,reason:'Предмет пересекает опору, мага или другую вещь'};
  return{ok:true,x,y};
 }
-function endTurn(sim,actor=sim.active,turn=sim.turns){if(!canControl(sim,actor,turn))return false;sim.inputs=[{},{}];sim.turns++;const other=1-sim.active;if(!sim.players[other].home)sim.active=other;sim.players.forEach(p=>p.jumpHeld=false);emit(sim,'turn',{active:sim.active});return true}
+function endTurn(sim,actor=sim.active,turn=sim.turns){if(!canControl(sim,actor,turn))return false;sim.turns++;const other=1-sim.active;if(!sim.players[other].home)sim.active=other;emit(sim,'turn',{active:sim.active});return true}
 function removeObject(sim,o){for(const j of sim.joints.filter(j=>j.a===o.id||j.b===o.id)){Composite.remove(sim.engine.world,j.joint);sim.joints=sim.joints.filter(q=>q!==j)}Composite.remove(sim.engine.world,o.body);sim.objects=sim.objects.filter(q=>q!==o)}
 function cast(sim,{spell,x,y,angle=0},actor=sim.active,turn=sim.turns){
  if(!canControl(sim,actor,turn))return{ok:false,reason:ready(sim)?'Сейчас ход напарника':'Ожидаем второго игрока'};
@@ -92,21 +94,24 @@ function cast(sim,{spell,x,y,angle=0},actor=sim.active,turn=sim.turns){
  sim.casts++;emit(sim,'cast',{x,y,spell,owner:sim.active});endTurn(sim);return{ok:true};
 }
 function grounded(sim,p){const b=p.body,foot={x:b.position.x,y:b.bounds.max.y};return[-8,0,8].some(dx=>Query.ray([...sim.terrain,...sim.objects.map(o=>o.body)],{x:foot.x+dx,y:foot.y-3},{x:foot.x+dx,y:foot.y+6},2).length>0)}
+function movePlayer(world,p,input,index){const b=p.body,dir=(input.right?1:0)-(input.left?1:0);p.ground=grounded(world,p);p.coyote=p.ground?6:Math.max(0,p.coyote-1);if(dir)p.face=dir;const desired=dir*SPEED;Body.setVelocity(b,{x:b.velocity.x+(desired-b.velocity.x)*(p.ground?.5:.15),y:b.velocity.y});if(input.jump&&!p.jumpHeld&&p.coyote){Body.setVelocity(b,{x:b.velocity.x,y:-JUMP});p.coyote=0;emit(world,'jump',{player:index})}p.jumpHeld=!!input.jump}
+function correctPrediction(pred,d){Body.setPosition(pred.player.body,{x:d.x,y:d.y});Body.setVelocity(pred.player.body,{x:d.vx,y:d.vy});pred.player.face=d.face;pred.player.ground=d.ground;pred.player.coyote=d.coyote||0;pred.player.jumpHeld=!!d.jumpHeld}
+function cloneCollider(b){return Bodies.fromVertices(b.position.x,b.position.y,[b.vertices.map(v=>({x:v.x,y:v.y}))],{isStatic:true,friction:b.friction,frictionStatic:b.frictionStatic,restitution:b.restitution})}
+function syncPredictionWorld(pred,sim){for(const o of pred.objects)Composite.remove(pred.engine.world,o.body);pred.objects=sim.objects.map(o=>{const b=o.body;return{body:cloneCollider(b),x:b.position.x,y:b.position.y,vx:b.velocity.x,vy:b.velocity.y,av:b.angularVelocity}});Composite.add(pred.engine.world,pred.objects.map(o=>o.body));pred.extrapolation=0}
+function createPrediction(sim,index){const p=sim.players[index],b=wizardBody(p.body.position.x,p.body.position.y),pred={engine:Engine.create({gravity:{x:0,y:GRAVITY},positionIterations:8,velocityIterations:8}),index,player:{...p,body:b},terrain:sim.terrain.map(cloneCollider),objects:[],events:[],start:{...sim.map.starts[index]},extrapolation:0};Composite.add(pred.engine.world,[b,...pred.terrain]);correctPrediction(pred,snapshot(sim).players[index]);syncPredictionWorld(pred,sim);return pred}
+function stepPrediction(pred,input,dt=1000/60){pred.extrapolation=Math.min(6,pred.extrapolation+dt/(1000/60));for(const o of pred.objects){Body.setPosition(o.body,{x:o.x+o.vx*pred.extrapolation,y:o.y+o.vy*pred.extrapolation});Body.setAngle(o.body,o.av*pred.extrapolation);Body.setVelocity(o.body,{x:o.vx,y:o.vy})}movePlayer(pred,pred.player,input,pred.index);Engine.update(pred.engine,dt);const b=pred.player.body;if(b.position.y>H+80||b.position.x< -45||b.position.x>W+45){Body.setPosition(b,pred.start);Body.setVelocity(b,{x:0,y:0})}}
 function step(sim,dt=1000/60){
  if(sim.won||!ready(sim))return;sim.tick++;
- sim.players.forEach((p,i)=>{if(p.home)return;const b=p.body,input=sim.active===i?sim.inputs[i]:{},dir=(input.right?1:0)-(input.left?1:0);p.ground=grounded(sim,p);p.coyote=p.ground?6:Math.max(0,p.coyote-1);if(dir)p.face=dir;
-  if(sim.active===i){const desired=dir*SPEED;Body.setVelocity(b,{x:b.velocity.x+(desired-b.velocity.x)*(p.ground?.5:.15),y:b.velocity.y});if(input.jump&&!p.jumpHeld&&p.coyote){Body.setVelocity(b,{x:b.velocity.x,y:-JUMP});p.coyote=0;emit(sim,'jump',{player:i})}p.jumpHeld=!!input.jump}
-  else if(p.ground)Body.setVelocity(b,{x:b.velocity.x*.82,y:b.velocity.y});
- });
+ sim.players.forEach((p,i)=>{if(canMove(sim,i))movePlayer(sim,p,sim.inputs[i],i)});
  sim.objects.forEach(o=>{if(o.type==='balloon'){const b=o.body,lift=b.position.y<140?-Math.min(.012,(140-b.position.y)*.0002):.018;Body.applyForce(b,b.position,{x:Math.sin(sim.tick*.015+o.id)*.0001,y:-lift});if(b.velocity.y< -1.5)Body.setVelocity(b,{x:b.velocity.x,y:-1.5})}});
  Engine.update(sim.engine,dt);
  for(const o of [...sim.objects])if(o.body.position.y>H+400||o.body.position.x< -700||o.body.position.x>W+700)removeObject(sim,o);
  sim.players.forEach((p,i)=>{if(p.home)return;const pos=p.body.position;if(pos.y>H+80||pos.x< -45||pos.x>W+45){Body.setPosition(p.body,sim.map.starts[i]);Body.setVelocity(p.body,{x:0,y:0});emit(sim,'fall',{player:i})}
   for(const s of sim.map.stars)if(!s.got&&Math.hypot(pos.x-s.x,pos.y-s.y)<42){s.got=true;emit(sim,'star',{x:s.x,y:s.y})}
-  if(Math.abs(pos.x-sim.map.exit.x)<36&&Math.abs(pos.y-(sim.map.exit.y-35))<50){p.home=true;Body.setStatic(p.body,true);p.body.isSensor=true;sim.inputs=[{},{}];emit(sim,'home',{player:i,x:pos.x,y:pos.y});if(sim.players.every(q=>q.home)){sim.won=true;emit(sim,'win')}else{sim.active=1-i;emit(sim,'turn',{active:sim.active})}}
+  if(Math.abs(pos.x-sim.map.exit.x)<36&&Math.abs(pos.y-(sim.map.exit.y-35))<50){p.home=true;Body.setStatic(p.body,true);p.body.isSensor=true;sim.inputs[i]={};emit(sim,'home',{player:i,x:pos.x,y:pos.y});if(sim.players.every(q=>q.home)){sim.won=true;emit(sim,'win')}else{sim.active=1-i;emit(sim,'turn',{active:sim.active})}}
  });
 }
-function snapshot(sim){const body=b=>({x:b.position.x,y:b.position.y,a:b.angle,vx:b.velocity.x,vy:b.velocity.y,av:b.angularVelocity});return{seed:sim.map.seed,level:sim.level,active:sim.active,casts:sim.casts,turns:sim.turns,won:sim.won,stars:sim.map.stars.map(s=>s.got),players:sim.players.map(p=>({...body(p.body),name:p.name,present:p.present,home:p.home,face:p.face,ground:p.ground})),objects:sim.objects.map(o=>({id:o.id,type:o.type,w:o.w,h:o.h,r:o.r,owner:o.owner,pinned:o.pinned,...body(o.body)})),joints:sim.joints.map(j=>({id:j.id,type:j.type,a:j.a,b:j.b,pointA:j.joint.pointA,pointB:j.joint.pointB})),tick:sim.tick}}
+function snapshot(sim){const body=b=>({x:b.position.x,y:b.position.y,a:b.angle,vx:b.velocity.x,vy:b.velocity.y,av:b.angularVelocity});return{seed:sim.map.seed,level:sim.level,active:sim.active,casts:sim.casts,turns:sim.turns,won:sim.won,stars:sim.map.stars.map(s=>s.got),players:sim.players.map(p=>({...body(p.body),name:p.name,present:p.present,home:p.home,face:p.face,ground:p.ground,coyote:p.coyote,jumpHeld:p.jumpHeld})),objects:sim.objects.map(o=>({id:o.id,type:o.type,w:o.w,h:o.h,r:o.r,owner:o.owner,pinned:o.pinned,...body(o.body)})),joints:sim.joints.map(j=>({id:j.id,type:j.type,a:j.a,b:j.b,pointA:j.joint.pointA,pointB:j.joint.pointB})),tick:sim.tick}}
 function applySnapshot(sim,s){if(s.seed!==sim.map.seed||s.level!==sim.level)sim=create(s.seed,s.level);const set=(b,d)=>{Body.setPosition(b,{x:d.x,y:d.y});Body.setAngle(b,d.a||0);Body.setVelocity(b,{x:d.vx,y:d.vy});Body.setAngularVelocity(b,d.av||0)};
  sim.active=s.active;sim.casts=s.casts;sim.turns=s.turns;sim.won=s.won;sim.tick=s.tick;sim.map.stars.forEach((a,i)=>a.got=s.stars[i]);
  s.players.forEach((d,i)=>{const p=sim.players[i];setPresent(sim,i,d.present);set(p.body,d);p.name=cleanName(d.name,i?'Друг':'Колдун');p.home=d.home;p.face=d.face;p.ground=d.ground});sim.events=[];
@@ -115,5 +120,5 @@ function applySnapshot(sim,s){if(s.seed!==sim.map.seed||s.level!==sim.level)sim=
  // Guest does not simulate physics; joints are visual records from the host.
  sim.joints=s.joints.map(j=>({...j,joint:j}));return sim;
 }
-return{M,W,H,SPEED,JUMP,GRAVITY,RANGE,MAX_OBJECTS,SPELLS,FAMILIES,random,generate,reachableWithoutMagic,cleanName,ready,canControl,setPresent,create,preview,cast,endTurn,step,snapshot,applySnapshot,findObject,addObject,addPin,grounded};
+return{M,W,H,SPEED,JUMP,GRAVITY,RANGE,MAX_OBJECTS,SPELLS,FAMILIES,random,generate,reachableWithoutMagic,cleanName,ready,canMove,canControl,setPresent,create,preview,cast,endTurn,step,snapshot,applySnapshot,findObject,addObject,addPin,grounded,createPrediction,syncPredictionWorld,stepPrediction,correctPrediction};
 });

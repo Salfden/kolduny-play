@@ -7,17 +7,19 @@ document.querySelectorAll('[data-icon]').forEach(e=>e.innerHTML=icon(e.dataset.i
 document.querySelector('.canvas-wrap').appendChild($('lobbyTemplate').content.cloneNode(true));
 let ownName='';try{ownName=K.cleanName(localStorage.getItem('kolduny-name'),'')}catch{}$('playerName').value=ownName;
 let sim,selected=0,angle=0,hover=null,eraseMode=false,particles=[],clock=0,last=0,accumulator=0,toastTimer,sound=false,audio,mode='lobby',peer=null,conn=null,myPlayer=0,peerPromise=null,netTime=0,pending=false,connectionReady=false,roomCodeValue='',lastMessageAt=0,lastPingAt=0,view=new Map(),bg=document.createElement('canvas'),stars=[];
+let prediction=null,movementInput={},movementSeq=0,pendingCorrectionSeq=null,hostInputSeq=-1,hostCorrectionSeq=null,correctionOffset={x:0,y:0};
 bg.width=W;bg.height=H;
 function newSeed(exclude){let s,m;do{s=crypto.getRandomValues(new Uint32Array(1))[0];m=K.generate(s)}while(m.kind===exclude||(sim&&exclude!==undefined&&m.spells.some((book,i)=>book.join()===sim.map.spells[i].join())));return s}
-function start(seed=newSeed(),level=1){const names=sim?sim.players.map(p=>p.name):['Колдун','Друг'];names[myPlayer]=ownName||'Колдун';sim=K.create(seed,level,{present:connectionReady?[true,true]:[myPlayer===0,myPlayer===1],names});selected=0;angle=0;particles=[];view.clear();hover=null;eraseMode=false;accumulator=0;buildBackground();updateUI();sync()}
+function start(seed=newSeed(),level=1){const names=sim?sim.players.map(p=>p.name):['Колдун','Друг'];names[myPlayer]=ownName||'Колдун';sim=K.create(seed,level,{present:connectionReady?[true,true]:[myPlayer===0,myPlayer===1],names});selected=0;angle=0;particles=[];view.clear();hover=null;eraseMode=false;accumulator=0;prediction=null;movementInput={};pendingCorrectionSeq=null;correctionOffset={x:0,y:0};buildBackground();updateUI();sync()}
 function connected(){return connectionReady&&!!conn?.open&&K.ready(sim)}
 function canPlay(){return connected()&&K.canControl(sim,myPlayer)}
+function canWalk(){return connected()&&K.canMove(sim,myPlayer)}
 function wizardName(i){return sim.players[i].name}
 function notify(text){$('toast').textContent=text;$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),3500)}
 function updateUI(){
  const a=myPlayer,mine=canPlay(),together=connected(),f=FAMILIES[sim.map.kind];document.documentElement.style.setProperty('--active',COLORS[a]);
  $('levelNumber').textContent=String(sim.level).padStart(2,'0');$('levelName').textContent=f.name;$('familyTag').textContent=f.tag;$('seedTag').textContent='МИР '+sim.map.seed.toString(36).toUpperCase();
- $('turnPill').innerHTML='<i></i><span></span>';$('turnPill').querySelector('span').textContent=together?wizardName(sim.active)+' колдует':'Ожидаем второго игрока';$('wizardName').textContent=wizardName(a);$('yourTurn').textContent=!together?'ОЖИДАНИЕ':sim.players[a].home?'В ПОРТАЛЕ':mine?'ВАШ ХОД':'ХОД ДРУГА';$('wizardHint').textContent=!together?'Для игры нужно подключение друга':sim.players[a].home?'Ваш путь завершён. Наблюдайте за другом.':mine?'Одно заклинание, затем ход другу':'Друг восстанавливает вашу магию.';$('manaLabel').textContent=!together?'НУЖЕН ВТОРОЙ МАГ':sim.players[a].home?'КОЛДОВСТВО ЗАВЕРШЕНО':mine?'МАГИЯ ГОТОВА':'ВОССТАНАВЛИВАЕТСЯ';
+ $('turnPill').innerHTML='<i></i><span></span>';$('turnPill').querySelector('span').textContent=together?'Магия: '+wizardName(sim.active):'Ожидаем второго игрока';$('wizardName').textContent=wizardName(a);$('yourTurn').textContent=!together?'ОЖИДАНИЕ':sim.players[a].home?'В ПОРТАЛЕ':mine?'ВАША МАГИЯ':'МАГИЯ ДРУГА';$('wizardHint').textContent=!together?'Для игры нужно подключение друга':sim.players[a].home?'Ваш путь завершён. Наблюдайте за другом.':mine?'Колдуйте. Двигаться можно обоим.':'Можно ходить и прыгать. Магия пока у друга.';$('manaLabel').textContent=!together?'НУЖЕН ВТОРОЙ МАГ':sim.players[a].home?'КОЛДОВСТВО ЗАВЕРШЕНО':mine?'МАГИЯ ГОТОВА':'ВОССТАНАВЛИВАЕТСЯ';
  $('lobby').hidden=together;$('lobbyCount').textContent='1 / 2';$('selfName').textContent=wizardName(a);$('lobbyTitle').textContent=roomCodeValue?'Ждём второго колдуна.':'Для магии нужны двое.';$('lobbyText').textContent=roomCodeValue?'Отправьте код другу. Его колдун появится после входа в комнату.':'Создайте комнату или войдите к другу. Играть можно только вместе.';$('lobbyCode').textContent=roomCodeValue;$('lobbyCode').classList.toggle('hidden',!roomCodeValue);document.querySelector('.game-shell').classList.toggle('waiting',!together);document.querySelector('.workbench').classList.toggle('waiting',!together);
  ['pass','rotateLeft','rotateRight','eraseTouch'].forEach(id=>$(id).disabled=!mine);
  $('levelTip').textContent=!together?'Игра ждёт двух игроков. Вы управляете только своим колдуном.':sim.players[a].home?'Ваш колдун уже вышел: движение и заклинания недоступны. Оставайтесь в комнате до выхода напарника.':f.hint;$('worldHint').textContent=sim.players[a].home?wizardName(a)+' уже в портале. Второй маг завершает путь самостоятельно.':sim.map.kind===2?'Два берега. Один портал. Встречайтесь в центре.':sim.map.kind===1?'Выход наверху. Гравитация думает иначе.':sim.map.kind===3?'Равновесие — это тоже заклинание.':'Если путь исчез — его придётся изобрести.';
@@ -95,7 +97,7 @@ function drawPortal(){const {x,y}=sim.map.exit;ctx.save();ctx.translate(x,y);con
  rect(ctx,-48,-2,96,9,3,'#625e67','#141d2b',2);rect(ctx,-40,-8,80,7,2,'#ac9473');star(ctx,0,-137,10,'#dfbc7b');line(ctx,-27,-138,-14,-138,'#c9a97666');line(ctx,14,-138,27,-138,'#c9a97666');ctx.textAlign='center';ctx.font='500 11px Golos Text,Arial';ctx.fillStyle='#d4bb8a';ctx.fillText('П О Р Т А Л',0,-160);
  for(let i=0;i<8;i++){let a=clock*.5+i*.78;ellipse(ctx,Math.cos(a)*54,-58+Math.sin(a)*66,1.4,1.4,'#ecc88099')}ctx.restore();
 }
-function visibleBody(id,b){if(mode!=='guest')return{x:b.position.x,y:b.position.y,a:b.angle};let v=view.get(id);if(!v){v={x:b.position.x,y:b.position.y,a:b.angle};view.set(id,v)}v.x+=(b.position.x-v.x)*.55;v.y+=(b.position.y-v.y)*.55;v.a+=(b.angle-v.a)*.55;return v}
+function visibleBody(id,b){if(mode==='guest'&&id==='p'+myPlayer&&prediction)return{x:prediction.player.body.position.x+correctionOffset.x,y:prediction.player.body.position.y+correctionOffset.y,a:0};if(mode!=='guest')return{x:b.position.x,y:b.position.y,a:b.angle};let v=view.get(id);if(!v){v={x:b.position.x,y:b.position.y,a:b.angle};view.set(id,v)}v.x+=(b.position.x-v.x)*.55;v.y+=(b.position.y-v.y)*.55;v.a+=(b.angle-v.a)*.55;return v}
 function drawObject(o,ghost=false,valid=true){
  const b=o.body,v=ghost?{x:b.position.x,y:b.position.y,a:b.angle}:visibleBody('o'+o.id,b);ctx.save();ctx.translate(v.x,v.y);ctx.rotate(v.a);if(ghost){ctx.globalAlpha=.45;ctx.shadowBlur=18;ctx.shadowColor=valid?'#ccb5ff':'#f79583'}
  const edge='#221b2c';
@@ -117,7 +119,7 @@ function drawObject(o,ghost=false,valid=true){
 }
 function drawJoints(){for(const j of sim.joints){const a=sim.objects.find(o=>o.id===j.a);if(!a)continue;const ap={x:a.body.position.x+j.joint.pointA.x,y:a.body.position.y+j.joint.pointA.y};if(j.type==='pin'){ellipse(ctx,ap.x,ap.y,7,7,'#d5b679','#32263e',2);star(ctx,ap.x,ap.y,4,'#f7dda3');ellipse(ctx,ap.x,ap.y,12,12,null,'#d9b67720')}else{const b=sim.objects.find(o=>o.id===j.b);if(!b)continue;const bp={x:b.body.position.x+j.joint.pointB.x,y:b.body.position.y+j.joint.pointB.y};ctx.beginPath();ctx.moveTo(ap.x,ap.y);ctx.quadraticCurveTo((ap.x+bp.x)/2+Math.sin(clock)*3,(ap.y+bp.y)/2, bp.x,bp.y);ctx.strokeStyle='#b39a7d';ctx.lineWidth=2;ctx.stroke()}}}
 function drawWizard(p,i){
- if(!p.present||p.home)return;const v=visibleBody('p'+i,p.body);ctx.save();ctx.translate(v.x,v.y);const active=connected()&&sim.active===i,walk=Math.min(1,Math.abs(p.body.velocity.x)/3),leg=Math.sin(clock*14)*walk*5,color=i?'#70b6a7':'#9e79d0',dark=i?'#355d65':'#5f447f',light=i?'#a1e0c1':'#d2abf1';
+ if(!p.present||p.home)return;if(mode==='guest'&&i===myPlayer&&prediction)p={...p,body:prediction.player.body,face:prediction.player.face,ground:prediction.player.ground};const v=visibleBody('p'+i,p.body);ctx.save();ctx.translate(v.x,v.y);const active=connected()&&sim.active===i,walk=Math.min(1,Math.abs(p.body.velocity.x)/3),leg=Math.sin(clock*14)*walk*5,color=i?'#70b6a7':'#9e79d0',dark=i?'#355d65':'#5f447f',light=i?'#a1e0c1':'#d2abf1';
  ellipse(ctx,0,26,22,5,'#080f2555');if(active){ellipse(ctx,0,27,26,7,null,COLORS[i]+'99',1.4);ellipse(ctx,0,27,33,10,null,COLORS[i]+'22');star(ctx,0,-69,6,COLORS[i],clock*.4)}
  // Animated boots, thick outlines, cape and a bright scarf.
  rect(ctx,-13,18+leg,11,9,3,'#343345','#172031',2);rect(ctx,3,18-leg,12,9,3,'#343345','#172031',2);
@@ -144,9 +146,12 @@ function render(dt){clock+=dt;ctx.clearRect(0,0,W,H);ctx.drawImage(bg,0,0);for(c
  // Spawn sigils remain as landmarks after a fall.
  sim.map.starts.forEach((p,i)=>{if(!sim.players[i].present||sim.players[i].home)return;ellipse(ctx,p.x,sim.map.platforms[p.platform].y-1,19,3,null,COLORS[i]+'55',1)});
 }
-function frame(t){const dt=Math.min(.1,(t-last)/1000||.016);last=t;if(mode==='host'&&connected()){accumulator+=dt;while(accumulator>=1/60){K.step(sim);accumulator-=1/60}events()}else accumulator=0;render(dt);if(mode==='host'&&connected()&&(netTime+=dt)>.05){netTime=0;sync()}if(conn?.open&&connectionReady){const now=performance.now();if(now-lastPingAt>2000){lastPingAt=now;conn.send({type:'ping'})}if(now-lastMessageAt>12000)disconnect(conn,'Друг не отвечает. Игра остановлена до подключения.')}requestAnimationFrame(frame)}
-function input(key,down){if(down&&!canPlay())return;sim.inputs[myPlayer][key]=down;if(mode==='guest'&&connected())conn.send({type:'input',turn:sim.turns,input:sim.inputs[myPlayer]})}
-function release(){sim.inputs=[{},{}];if(mode==='guest'&&connected())conn.send({type:'input',turn:sim.turns,input:{}})}
+function correctLocalMovement(d){if(!prediction)return;const old={x:prediction.player.body.position.x+correctionOffset.x,y:prediction.player.body.position.y+correctionOffset.y};K.correctPrediction(prediction,d);const dx=old.x-d.x,dy=old.y-d.y;correctionOffset=Math.hypot(dx,dy)>140?{x:0,y:0}:{x:dx,y:dy}}
+function flushMovementCorrection(){if(hostCorrectionSeq!==null&&connected()){conn.send({type:'movementCorrection',seq:hostCorrectionSeq,player:K.snapshot(sim).players[1]});hostCorrectionSeq=null}}
+function frame(t){const dt=Math.min(.1,(t-last)/1000||.016);last=t;if(connected()&&(mode==='host'||mode==='guest'&&prediction&&canWalk())){accumulator+=dt;while(accumulator>=1/60){if(mode==='host')K.step(sim);else K.stepPrediction(prediction,movementInput);accumulator-=1/60}if(mode==='host'){events();flushMovementCorrection()}else{if(prediction.events.some(e=>e.type==='jump'))beep(170);prediction.events=[]}}else accumulator=0;const fade=Math.exp(-18*dt);correctionOffset.x*=fade;correctionOffset.y*=fade;render(dt);if(mode==='host'&&connected()&&(netTime+=dt)>.05){netTime=0;sync()}if(conn?.open&&connectionReady){const now=performance.now();if(now-lastPingAt>2000){lastPingAt=now;conn.send({type:'ping'})}if(now-lastMessageAt>12000)disconnect(conn,'Друг не отвечает. Игра остановлена до подключения.')}requestAnimationFrame(frame)}
+function sendMovement(released){sim.inputs[myPlayer]={...movementInput};if(mode==='guest'&&connected()){movementSeq++;pendingCorrectionSeq=released?movementSeq:null;conn.send({type:'input',seq:movementSeq,released,input:{...movementInput}})}}
+function input(key,down){if(!['left','right','jump'].includes(key)||down&&!canWalk()||!!movementInput[key]===down)return;movementInput[key]=down;sendMovement(!down)}
+function release(){movementInput={};sim.inputs[myPlayer]={};sendMovement(true)}
 function point(e){const r=canvas.getBoundingClientRect();return{x:(e.clientX-r.left)*W/r.width,y:(e.clientY-r.top)*H/r.height}}
 canvas.onpointermove=e=>hover=point(e);canvas.onpointerleave=()=>hover=null;canvas.onpointerdown=e=>{if(e.button===2)return;e.preventDefault();canvas.focus({preventScroll:true});hover=point(e);castAt(hover)};canvas.oncontextmenu=e=>{e.preventDefault();castAt(point(e),true)};canvas.addEventListener('wheel',e=>{e.preventDefault();rotate(e.deltaY>0?1:-1)},{passive:false});
 const keymap={ArrowLeft:'left',KeyA:'left',ArrowRight:'right',KeyD:'right',ArrowUp:'jump',KeyW:'jump',Space:'jump'};
@@ -163,30 +168,33 @@ function status(text){$('connectionStatus').textContent=text;$('roomStatus').tex
 function loadPeer(){if(window.Peer)return Promise.resolve();if(peerPromise)return peerPromise;peerPromise=new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js';s.onload=res;s.onerror=()=>{peerPromise=null;rej(Error('Не удалось загрузить связь. Проверьте интернет.'))};document.head.appendChild(s)});return peerPromise}
 function saveName(announce=true){const name=K.cleanName($('playerName').value,'');if(!name){$('nameStatus').textContent='Введите имя вашего колдуна';$('playerName').focus();return false}ownName=name;$('playerName').value=name;try{localStorage.setItem('kolduny-name',name)}catch{}sim.players[myPlayer].name=name;if(connected()){if(mode==='guest')conn.send({type:'rename',name});else sync()}$('nameStatus').textContent=announce?'Имя сохранено. Напарник увидит его в игре.':'Имя вашего колдуна: '+name;updateUI();return true}
 function closeNetwork(){const old=peer,seed=sim.map.seed,level=sim.level;connectionReady=false;conn=null;peer=null;mode='lobby';myPlayer=0;roomCodeValue='';pending=false;release();if(old)old.destroy();$('roomCode').classList.add('hidden');start(seed,level);status('Ожидаем второго игрока · 1 / 2')}
-function disconnect(c,text){if(conn!==c)return;connectionReady=false;conn=null;pending=false;release();K.setPresent(sim,1-myPlayer,false);sim.events=[];accumulator=0;try{c.close()}catch{}status(text);updateUI();notify(text)}
+function disconnect(c,text){if(conn!==c)return;connectionReady=false;conn=null;pending=false;release();prediction=null;pendingCorrectionSeq=null;K.setPresent(sim,1-myPlayer,false);sim.events=[];accumulator=0;try{c.close()}catch{}status(text);updateUI();notify(text)}
 function acceptSnapshot(s){
  const oldSeed=sim.map.seed,oldLevel=sim.level,oldTurn=sim.turns,oldActive=sim.active,oldCast=sim.casts,oldWon=sim.won,oldNames=sim.players.map(p=>p.name).join('|'),oldObjects=sim.objects.length,oldStars=sim.map.stars.filter(s=>s.got).length;
  sim=K.applySnapshot(sim,s);pending=false;
- if(oldSeed!==sim.map.seed||oldLevel!==sim.level){view.clear();buildBackground();selected=0;angle=0}
- if(oldActive!==sim.active||oldTurn!==sim.turns){selected=0;eraseMode=false;release()}
+ const worldChanged=oldSeed!==sim.map.seed||oldLevel!==sim.level;
+ if(worldChanged){view.clear();buildBackground();selected=0;angle=0;release();prediction=null;pendingCorrectionSeq=null;correctionOffset={x:0,y:0}}
+ if(oldActive!==sim.active||oldTurn!==sim.turns){selected=0;eraseMode=false}
+ if(!prediction)prediction=K.createPrediction(sim,myPlayer);else{K.syncPredictionWorld(prediction,sim);if(!Object.values(movementInput).some(Boolean)&&pendingCorrectionSeq===null)correctLocalMovement(s.players[myPlayer])}
  if(oldCast!==sim.casts){beep(390);const last=sim.objects[sim.objects.length-1];if(last)burst(last.body.position.x,last.body.position.y,COLORS[1-sim.active],20)}
  if(oldActive!==sim.active||oldTurn!==sim.turns||oldSeed!==sim.map.seed||oldLevel!==sim.level||oldCast!==sim.casts||oldWon!==sim.won||oldNames!==sim.players.map(p=>p.name).join('|')||oldObjects!==sim.objects.length||oldStars!==sim.map.stars.filter(s=>s.got).length)updateUI();
 }
 function wire(c,host){
- conn=c;connectionReady=false;
+ conn=c;connectionReady=false;hostInputSeq=-1;hostCorrectionSeq=null;movementSeq=0;pendingCorrectionSeq=null;
  const welcome=()=>{lastMessageAt=lastPingAt=performance.now();$('roomDialog').close();status('В комнате 2 / 2 · вы — '+wizardName(myPlayer));updateUI();notify('Оба колдуна здесь. Начинается совместная магия!')};
- c.on('open',()=>{if(conn!==c)return;lastMessageAt=performance.now();status('Проверяем подключение второго колдуна…');if(!host)c.send({type:'hello',version:3,name:ownName})});
+ c.on('open',()=>{if(conn!==c)return;lastMessageAt=performance.now();status('Проверяем подключение второго колдуна…');if(!host)c.send({type:'hello',version:4,name:ownName})});
  c.on('data',m=>{if(conn!==c||!m||typeof m!=='object')return;lastMessageAt=performance.now();
   if(m.type==='ping'){c.send({type:'pong'});return}if(m.type==='pong')return;
-  if(host&&m.type==='hello'&&!connectionReady){if(m.version!==3||!K.cleanName(m.name,'')){c.send({type:'rejected',reason:'Обновите игру и укажите имя колдуна'});disconnect(c,'Друг использует другую версию игры');return}sim.players[1].name=K.cleanName(m.name);K.setPresent(sim,1,true,{respawn:true});sim.events=[];connectionReady=true;c.send({type:'welcome',version:3,state:K.snapshot(sim)});welcome();return}
-  if(!host&&m.type==='welcome'&&!connectionReady&&m.version===3&&m.state?.players?.length===2){acceptSnapshot(m.state);connectionReady=true;welcome();return}
+  if(host&&m.type==='hello'&&!connectionReady){if(m.version!==4||!K.cleanName(m.name,'')){c.send({type:'rejected',reason:'Обновите игру и укажите имя колдуна'});disconnect(c,'Друг использует другую версию игры');return}sim.players[1].name=K.cleanName(m.name);K.setPresent(sim,1,true,{respawn:true});sim.events=[];connectionReady=true;c.send({type:'welcome',version:4,state:K.snapshot(sim)});welcome();return}
+  if(!host&&m.type==='welcome'&&!connectionReady&&m.version===4&&m.state?.players?.length===2){acceptSnapshot(m.state);connectionReady=true;welcome();return}
   if(m.type==='rejected'){pending=false;notify(typeof m.reason==='string'?m.reason:'Действие отклонено');return}
   if(!connectionReady)return;
   if(host){
    if(m.type==='rename'){sim.players[1].name=K.cleanName(m.name,'Друг');sync();updateUI()}
-   if(m.type==='input'&&K.canControl(sim,1,m.turn)&&m.input)sim.inputs[1]={left:m.input.left===true,right:m.input.right===true,jump:m.input.jump===true};
+   if(m.type==='input'&&Number.isSafeInteger(m.seq)&&m.seq>hostInputSeq&&m.input){hostInputSeq=m.seq;sim.inputs[1]=K.canMove(sim,1)?{left:m.input.left===true,right:m.input.right===true,jump:m.input.jump===true}:{};if(m.released===true)hostCorrectionSeq=m.seq}
    if(m.type==='action'&&m.action&&['cast','pass'].includes(m.action.type)){const r=applyAction(m.action,1);if(!r.ok)c.send({type:'rejected',reason:r.reason});sync()}
-  }else if(m.type==='state'&&m.state?.players?.length===2&&Array.isArray(m.state.objects))acceptSnapshot(m.state);
+  }else if(m.type==='movementCorrection'&&m.seq===pendingCorrectionSeq&&m.seq===movementSeq&&m.player&&['x','y','vx','vy'].every(k=>Number.isFinite(m.player[k]))){correctLocalMovement(m.player);pendingCorrectionSeq=null}
+  else if(m.type==='state'&&m.state?.players?.length===2&&Array.isArray(m.state.objects))acceptSnapshot(m.state);
  });
  c.on('close',()=>disconnect(c,'Друг отключился. Ожидаем второго игрока.'));
  c.on('error',()=>disconnect(c,'Связь с другом потеряна. Игра остановлена.'));
@@ -194,8 +202,8 @@ function wire(c,host){
 }
 async function connectOnline(host){
  if(!saveName(false))return;const code=$('joinCode').value.trim().toUpperCase();if(!host&&!/^[A-Z0-9]{6}$/.test(code)){status('Введите код из 6 букв и цифр');return}const btn=$(host?'createRoom':'joinRoom');btn.disabled=true;status('Открываем магический канал…');try{await loadPeer();closeNetwork();mode=host?'host':'guest';myPlayer=host?0:1;start(sim.map.seed,sim.level);
- const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789',id=Array.from(crypto.getRandomValues(new Uint8Array(6)),n=>chars[n%chars.length]).join('');peer=new Peer(host?'kolduny-physics-v3-'+id:undefined,{debug:0});const thisPeer=peer;
- peer.on('open',()=>{if(peer!==thisPeer)return;btn.disabled=false;if(host){roomCodeValue=id;$('roomCode').textContent=id;$('roomCode').classList.remove('hidden');status('Комната открыта · 1 / 2. Передайте код другу.');peer.on('connection',c=>{if(conn){c.on('open',()=>c.close());return}wire(c,true)})}else{status('Ищем второго мага…');wire(peer.connect('kolduny-physics-v3-'+code,{reliable:true}),false)}updateUI()});peer.on('error',e=>{if(peer!==thisPeer)return;btn.disabled=false;if(conn)disconnect(conn,'Соединение с другом потеряно');status(e.type==='peer-unavailable'?'Комната не найдена. Проверьте код.':'Связь недоступна. Проверьте интернет или попробуйте другую сеть.')});setTimeout(()=>{btn.disabled=false;if(peer===thisPeer&&!peer.open)status('Сервер связи не отвечает. Попробуйте другую сеть.')},16000);
+ const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789',id=Array.from(crypto.getRandomValues(new Uint8Array(6)),n=>chars[n%chars.length]).join('');peer=new Peer(host?'kolduny-physics-v4-'+id:undefined,{debug:0});const thisPeer=peer;
+ peer.on('open',()=>{if(peer!==thisPeer)return;btn.disabled=false;if(host){roomCodeValue=id;$('roomCode').textContent=id;$('roomCode').classList.remove('hidden');status('Комната открыта · 1 / 2. Передайте код другу.');peer.on('connection',c=>{if(conn){c.on('open',()=>c.close());return}wire(c,true)})}else{status('Ищем второго мага…');wire(peer.connect('kolduny-physics-v4-'+code,{reliable:true}),false)}updateUI()});peer.on('error',e=>{if(peer!==thisPeer)return;btn.disabled=false;if(conn)disconnect(conn,'Соединение с другом потеряно');status(e.type==='peer-unavailable'?'Комната не найдена. Проверьте код.':'Связь недоступна. Проверьте интернет или попробуйте другую сеть.')});setTimeout(()=>{btn.disabled=false;if(peer===thisPeer&&!peer.open)status('Сервер связи не отвечает. Попробуйте другую сеть.')},16000);
  }catch(e){status(e.message);btn.disabled=false}
 }
 $('createRoom').onclick=()=>connectOnline(true);$('joinRoom').onclick=()=>connectOnline(false);$('saveName').onclick=()=>saveName();$('lobbyRoom').onclick=()=>{release();$('roomDialog').showModal()};$('leaveRoom').onclick=()=>{closeNetwork();$('roomDialog').close();notify('Вы вышли из комнаты. Для игры пригласите друга.')};
